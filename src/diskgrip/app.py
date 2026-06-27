@@ -31,25 +31,32 @@ _MEDIA_GLYPH = {
 
 
 def _device_line(dev: BlockDevice) -> str:
-    """One line describing a device: name, size, fs/label and mount."""
-    bits = [f"{dev.name}", f"({dev.size})" if dev.size else ""]
+    """One line describing a device: identity, then filesystem and mount.
+
+    Disks lead with a media glyph and model; partitions just give the name. The
+    filesystem / mount tail is shown for *either* — a disk can carry a
+    filesystem directly (no partition table), and that mount must not be hidden.
+    """
     if dev.is_disk:
         glyph = _MEDIA_GLYPH.get(dev.media, "▪")
-        model = f" {dev.model}" if dev.model else ""
-        bits = [f"{glyph} {dev.name}", f"({dev.size})", model.strip()]
+        bits = [f"{glyph} {dev.name}", f"({dev.size})" if dev.size else "",
+                (dev.model or "").strip()]
     else:
-        if dev.fstype:
-            fs = dev.fstype
-            if dev.label:
-                fs += f" “{dev.label}”"
-            bits.append(f"[{fs}]")
-        elif dev.parttype:
-            bits.append(f"[{dev.parttype}]")
-        if dev.mounted:
-            use = f" {dev.fsuse} used" if dev.fsuse else ""
-            bits.append(f"→ {', '.join(dev.mountpoints)}{use}")
-        elif dev.has_filesystem:
-            bits.append("→ (not mounted)")
+        bits = [dev.name, f"({dev.size})" if dev.size else ""]
+
+    if dev.fstype:
+        fs = dev.fstype
+        if dev.label:
+            fs += f" “{dev.label}”"
+        bits.append(f"[{fs}]")
+    elif dev.parttype:
+        bits.append(f"[{dev.parttype}]")
+
+    if dev.mounted:
+        use = f" {dev.fsuse} used" if dev.fsuse else ""
+        bits.append(f"→ {', '.join(dev.mountpoints)}{use}")
+    elif dev.has_filesystem:
+        bits.append("→ (not mounted)")
     return " ".join(b for b in bits if b)
 
 
