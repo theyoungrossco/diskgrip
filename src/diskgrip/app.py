@@ -1,15 +1,16 @@
-"""diskgrip CLI: render a host's block-storage topology as a tree.
+"""diskgrip entry point: CLI tree viewer and PySide6 GUI.
 
-This is the headless *viewer* — the first slice of diskgrip, deliberately
-Qt-free. It reuses the vendored :class:`~diskgrip.core.runner.Runner` for
-local/SSH reads and the same probe/model the future GUI will, so the canvas can
-later sit straight on top.
+CLI (default)::
 
-Usage::
-
-    diskgrip               # probe and show this machine's disks
+    diskgrip               # probe and print a tree of this machine's disks
     diskgrip --demo        # canned demo host, no root, touches nothing
     diskgrip --host HOST   # read a remote host over SSH (~/.ssh/config)
+
+GUI (requires PySide6)::
+
+    diskgrip --gui         # launch the canvas UI on the local machine
+    diskgrip --gui --demo  # launch the canvas with the canned demo host
+    diskgrip --gui --host HOST
 """
 
 from __future__ import annotations
@@ -82,7 +83,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="show the canned demo host; touches nothing")
     parser.add_argument("--host", metavar="HOST",
                         help="read a remote host over SSH (ssh config name or user@host)")
+    parser.add_argument("--gui", action="store_true",
+                        help="launch the PySide6 canvas UI (requires PySide6)")
     args = parser.parse_args(argv)
+
+    if args.gui:
+        return _launch_gui(args)
 
     if args.demo:
         print("diskgrip — demo host (read-only, nothing is executed)\n")
@@ -102,3 +108,33 @@ def main(argv: list[str] | None = None) -> int:
     print(f"diskgrip — {label}\n")
     print(render_tree(devices))
     return 0
+
+
+def _launch_gui(args) -> int:
+    """Launch the PySide6 GUI. Imported lazily so core stays Qt-free."""
+    import signal
+
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        print(
+            "diskgrip: PySide6 is required for the GUI.\n"
+            "Install it with:  pip install PySide6",
+            file=sys.stderr,
+        )
+        return 1
+
+    app = QApplication(sys.argv[:1])
+    app.setApplicationName("diskgrip")
+    app.setApplicationDisplayName("diskgrip")
+
+    from diskgrip.ui import theme
+    theme.apply_theme(app, "system")
+
+    if sys.platform != "win32":
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    from diskgrip.ui.main_window import MainWindow
+    window = MainWindow(host=args.host, demo=args.demo)
+    window.show()
+    return app.exec()
