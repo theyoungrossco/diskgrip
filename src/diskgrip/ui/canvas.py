@@ -1,5 +1,4 @@
-"""Canvas: lays out disk nodes and their children as a tree, one column per
-disk, partitions stacked vertically beneath their parent."""
+"""Canvas: lays out DiskBar items vertically, one per disk, gparted-style."""
 
 from __future__ import annotations
 
@@ -9,10 +8,9 @@ from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
 from diskgrip.core.model import BlockDevice
 from diskgrip.ui import theme
-from diskgrip.ui.items import DiskNode, Edge, PartNode
+from diskgrip.ui.items import DiskBar, DiskNode, PartNode, PartSegment
 
-COL_GAP = 50.0    # horizontal space between disk columns
-NODE_GAP = 14.0   # vertical space between sibling nodes in a column
+DISK_GAP = 18.0   # vertical gap between disk bars
 MARGIN = 30.0     # scene margin on all sides
 
 
@@ -43,61 +41,20 @@ class Canvas(QGraphicsView):
         if not devices:
             return
 
-        x = MARGIN
+        y = MARGIN
         for disk in devices:
-            col_width = self._place_tree(disk, x, MARGIN)
-            x += col_width + COL_GAP
+            bar = DiskBar(disk)
+            scene.addItem(bar)
+            bar.setPos(MARGIN, y)
+            y += bar.boundingRect().height() + DISK_GAP
 
-        # Fit the whole diagram in view on first populate; subsequent refreshes
-        # keep whatever pan/zoom the user had set.
-        self.setSceneRect(scene.itemsBoundingRect().adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN))
+        self.setSceneRect(
+            scene.itemsBoundingRect().adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN)
+        )
 
     def wheelEvent(self, event) -> None:
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.scale(factor, factor)
-
-    # ------------------------------------------------------------------ #
-    # layout
-    # ------------------------------------------------------------------ #
-    def _place_tree(self, disk: BlockDevice, left: float, top: float) -> float:
-        """Place *disk* and all its children at (*left*, *top*).
-
-        Returns the column width (the widest node in this subtree) so the
-        caller knows where to start the next column.
-        """
-        scene = self.scene()
-        disk_node = DiskNode(disk)
-        scene.addItem(disk_node)
-        disk_node.setPos(left, top)
-
-        col_w = disk_node.boundingRect().width()
-        y = top + disk_node.boundingRect().height() + NODE_GAP
-
-        for child in disk.children:
-            child_node, subtree_h = self._place_child(child, left, y, scene, disk_node)
-            col_w = max(col_w, child_node.boundingRect().width())
-            y += subtree_h + NODE_GAP
-
-        return col_w
-
-    def _place_child(self, dev: BlockDevice, left: float, top: float,
-                     scene: QGraphicsScene, parent_node) -> tuple[PartNode, float]:
-        """Place *dev* and its children recursively; return (node, total height)."""
-        node = PartNode(dev)
-        scene.addItem(node)
-        node.setPos(left + 20, top)  # indent children relative to parent column
-        edge = Edge(parent_node, node)
-        scene.addItem(edge)
-
-        total_h = node.boundingRect().height()
-        y = top + total_h + NODE_GAP
-
-        for child in dev.children:
-            child_node, child_h = self._place_child(child, left + 20, y, scene, node)
-            total_h += NODE_GAP + child_h
-            y += child_h + NODE_GAP
-
-        return node, total_h
 
     # ------------------------------------------------------------------ #
     # context menus
@@ -105,10 +62,15 @@ class Canvas(QGraphicsView):
     def contextMenuEvent(self, event) -> None:
         scene_pos = self.mapToScene(event.pos())
         item = self.scene().itemAt(scene_pos, self.transform())
-        # Walk up to find a DiskNode or PartNode (an Edge has no menu)
-        while item is not None and not isinstance(item, (DiskNode, PartNode)):
+        # Walk up to find an actionable item type
+        while item is not None and not isinstance(
+            item, (DiskBar, DiskNode, PartNode, PartSegment)
+        ):
             item = item.parentItem()
         if item is not None:
+            # Right-click on unallocated space → show disk menu instead
+            if isinstance(item, PartSegment) and item.dev is None:
+                item = item.parentItem()
             self.node_menu_requested.emit(item, event.globalPos())
         else:
             super().contextMenuEvent(event)

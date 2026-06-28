@@ -36,6 +36,7 @@ _LIGHT = {
     "part_lvm": ("#eee5f8", "#6a44a8"),      # LVM physical / logical volume
     "part_swap": ("#ebebeb", "#808080"),
     "part_loop": ("#edf5fb", "#4080a8"),
+    "part_unallocated": ("#e8e8e8", "#b0b0b0"),
 }
 
 _DARK = {
@@ -57,6 +58,7 @@ _DARK = {
     "part_lvm": ("#251a38", "#9060d8"),
     "part_swap": ("#282828", "#888888"),
     "part_loop": ("#1a2b38", "#5090b8"),
+    "part_unallocated": ("#2a2a2a", "#555555"),
 }
 
 
@@ -140,6 +142,12 @@ def part_node(kind: str, mounted: bool = False, fstype: str | None = None) -> tu
     else:
         key = "part"
     fill, border = _table()[key]
+    return QColor(fill), QColor(border)
+
+
+def unallocated_segment() -> tuple[QColor, QColor]:
+    """(fill, border) for an unallocated space segment in a DiskBar."""
+    fill, border = _table()["part_unallocated"]
     return QColor(fill), QColor(border)
 
 

@@ -46,6 +46,11 @@ class BlockDevice:
     parttype: str | None = None  # human partition type, lsblk "parttypename"
     removable: bool = False  # lsblk "rm"
     readonly: bool = False  # lsblk "ro"
+    size_bytes: int | None = None  # raw byte count from lsblk -b; None when probing without -b
+    start: int | None = None  # partition start in sectors (lsblk "start")
+    partflags: list[str] = field(default_factory=list)  # ["esp", "boot", "bios_grub", "lvm", ...]
+    pttype: str | None = None  # partition table type at disk level: "gpt" | "dos" | None
+    ptuuid: str | None = None  # partition table UUID
     children: list[BlockDevice] = field(default_factory=list)
 
     @property

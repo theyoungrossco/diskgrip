@@ -21,7 +21,7 @@ from diskgrip.core.model import BlockDevice
 from diskgrip.core.runner import DemoRunner, LocalRunner, Runner, SSHRunner
 from diskgrip.ui.canvas import Canvas
 from diskgrip.ui.dialogs import FormatDialog, MountDialog, confirm_commands
-from diskgrip.ui.items import DiskNode, PartNode
+from diskgrip.ui.items import DiskBar, DiskNode, PartNode, PartSegment
 from diskgrip.ui.worker import run_in_background
 
 
@@ -129,7 +129,7 @@ class MainWindow(QMainWindow):
     def _show_node_menu(self, node, global_pos: QPoint) -> None:
         menu = QMenu(self)
 
-        if isinstance(node, DiskNode):
+        if isinstance(node, (DiskNode, DiskBar)):
             dev = node.dev
             act_ptable = QAction("Create partition table (GPT)…", self)
             act_ptable.triggered.connect(lambda: self._do_create_partition_table(dev, "gpt"))
@@ -141,8 +141,10 @@ class MainWindow(QMainWindow):
             )
             menu.addAction(act_ptable_mbr)
 
-        elif isinstance(node, PartNode):
+        elif isinstance(node, (PartNode, PartSegment)):
             dev = node.dev
+            if dev is None:
+                return  # unallocated segment — no actions
 
             if dev.mounted:
                 act_umount = QAction(f"Unmount {dev.path}…", self)

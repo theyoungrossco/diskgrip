@@ -1,5 +1,5 @@
-"""Canvas items: rectangular nodes for disks and their children, joined by
-straight parent-child lines."""
+"""Canvas items: DiskBar with nested PartSegments (gparted-style), plus legacy
+rectangular nodes and connector edges kept for cross-device relationships."""
 
 from __future__ import annotations
 
@@ -10,12 +10,19 @@ from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsObject, QGra
 from diskgrip.core.model import BlockDevice
 from diskgrip.ui import theme
 
+# ── DiskBar / PartSegment constants ────────────────────────────────────────────
+BAR_W = 800.0          # all disk bars share this fixed width
+DISK_HEADER_H = 32.0   # height of the disk metadata strip above the partition bar
+BAR_H = 56.0           # height of the partition-segment area
+BAR_CORNER_R = 5.0
+MIN_SEG_W = 2.0        # minimum rendered segment width in pixels
+
+# ── Legacy BaseNode / PartNode / DiskNode constants ───────────────────────────
 PAD = 9.0
 MIN_W = 170.0
 MAX_TEXT_W = 260.0
 RADIUS = 6.0
 
-# Media-class labels for the disk title line
 _MEDIA_LABEL = {
     "ssd": "SSD",
     "hdd": "HDD",
@@ -25,6 +32,238 @@ _MEDIA_LABEL = {
     "unknown": "Block device",
 }
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _seg_detail_lines(dev: BlockDevice) -> list[str]:
+    """Short info lines for a partition segment: size, fs/label, mount, flags."""
+    lines = []
+    if dev.size:
+        sz = dev.size
+        if dev.fsuse:
+            sz += f" ({dev.fsuse})"
+        lines.append(sz)
+    if dev.fstype:
+        fs = dev.fstype
+        if dev.label:
+            fs += f' "{dev.label}"'
+        lines.append(fs)
+    elif dev.parttype:
+        lines.append(dev.parttype)
+    if dev.mountpoints:
+        lines.append(dev.mountpoints[0])
+    if dev.partflags:
+        lines.append("  ".join(dev.partflags))
+    return lines
+
+
+def _compute_segments(
+    disk: BlockDevice, bar_w: float
+) -> list[tuple[float, float, BlockDevice | None]]:
+    """Compute (x_offset, width, device_or_None) segments for a DiskBar.
+
+    Partitions are proportional to their byte size relative to the disk.
+    Any remaining space (unallocated / GPT overhead) that is at least 0.5 %
+    of the disk appears as a trailing segment with device=None.
+    Falls back to equal widths when byte counts are not available.
+    """
+    children = disk.children
+    if not children:
+        return [(0.0, bar_w, None)]
+
+    disk_bytes = disk.size_bytes
+    if disk_bytes and disk_bytes > 0:
+        sorted_parts = sorted(children, key=lambda c: c.start if c.start is not None else 0)
+        segments: list[tuple[float, float, BlockDevice | None]] = []
+        used_bytes = 0
+        for child in sorted_parts:
+            child_bytes = child.size_bytes or 0
+            x = bar_w * used_bytes / disk_bytes
+            w = max(bar_w * child_bytes / disk_bytes, MIN_SEG_W)
+            segments.append((x, w, child))
+            used_bytes += child_bytes
+        # Trailing unallocated (>0.5% of disk is worth rendering)
+        remaining = disk_bytes - used_bytes
+        if remaining > disk_bytes * 0.005:
+            rem_w = bar_w * remaining / disk_bytes
+            if rem_w >= 4.0:
+                segments.append((bar_w * used_bytes / disk_bytes, rem_w, None))
+        return segments
+    else:
+        n = len(children)
+        w = bar_w / n
+        return [(i * w, w, child) for i, child in enumerate(children)]
+
+
+# ── gparted-style items ───────────────────────────────────────────────────────
+
+class PartSegment(QGraphicsItem):
+    """One proportional slice inside a DiskBar — one partition or unallocated gap."""
+
+    def __init__(
+        self,
+        dev: BlockDevice | None,
+        x: float,
+        w: float,
+        parent: QGraphicsItem,
+    ) -> None:
+        super().__init__(parent)
+        self.setPos(x, DISK_HEADER_H)
+        self.dev = dev
+        self.key: str | None = f"dev:{dev.name}" if dev else None
+        self._w = w
+
+        if dev is not None:
+            self._body, self._border = theme.part_node(dev.kind, dev.mounted, dev.fstype)
+        else:
+            self._body, self._border = theme.unallocated_segment()
+
+        base = QApplication.font()
+        self._name_font = QFont(base)
+        self._name_font.setBold(True)
+        self._name_font.setPointSizeF(max(6.5, base.pointSizeF() - 1.5))
+        self._detail_font = QFont(base)
+        self._detail_font.setPointSizeF(max(5.5, base.pointSizeF() - 2.5))
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, self._w, BAR_H)
+
+    def paint(self, painter, option, widget=None) -> None:
+        w = self._w
+        h = BAR_H
+        pen = QPen(self._border, 1.0)
+        painter.setPen(pen)
+        painter.setBrush(self._body)
+        # Hairline gap between segments via inset
+        painter.drawRect(QRectF(0.5, 0, w - 1.0, h))
+
+        dev = self.dev
+        if dev is None:
+            if w > 36:
+                painter.setPen(QPen(theme.text_dim()))
+                painter.setFont(self._detail_font)
+                painter.drawText(
+                    QRectF(2, 0, w - 4, h),
+                    Qt.AlignmentFlag.AlignCenter,
+                    "free",
+                )
+            return
+
+        if w < 14:
+            return
+
+        nm = QFontMetricsF(self._name_font)
+        painter.setFont(self._name_font)
+        painter.setPen(QPen(theme.text()))
+        painter.drawText(
+            QPointF(4, 3 + nm.ascent()),
+            nm.elidedText(dev.name, Qt.TextElideMode.ElideRight, w - 6),
+        )
+
+        dm = QFontMetricsF(self._detail_font)
+        painter.setFont(self._detail_font)
+        painter.setPen(QPen(theme.text_dim()))
+        y = 3 + nm.height() + 1
+        for line in _seg_detail_lines(dev):
+            if y + dm.height() > h - 2:
+                break
+            painter.drawText(
+                QPointF(4, y + dm.ascent()),
+                dm.elidedText(line, Qt.TextElideMode.ElideRight, w - 6),
+            )
+            y += dm.height()
+
+
+class DiskBar(QGraphicsObject):
+    """A gparted-style horizontal bar: disk header + proportional partition segments."""
+
+    moved = Signal()
+    drag_finished = Signal()
+
+    def __init__(self, dev: BlockDevice) -> None:
+        super().__init__()
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemClipsChildrenToShape, True)
+        self.setZValue(1)
+
+        self.dev = dev
+        self.key = f"disk:{dev.name}"
+        self._press_pos: QPointF | None = None
+        self._body, self._border = theme.disk_node(dev.media)
+
+        base = QApplication.font()
+        self._header_font = QFont(base)
+        self._header_font.setBold(True)
+        self._header_font.setPointSizeF(max(7.5, base.pointSizeF() - 0.5))
+
+        for x, w, child in _compute_segments(dev, BAR_W):
+            PartSegment(child, x, max(w, MIN_SEG_W), self)
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, BAR_W, DISK_HEADER_H + BAR_H)
+
+    def anchor(self) -> QPointF:
+        return self.sceneBoundingRect().center()
+
+    def paint(self, painter, option, widget=None) -> None:
+        w = BAR_W
+        total_h = DISK_HEADER_H + BAR_H
+
+        # Outer rounded rect (disk border colour)
+        rect = QRectF(0.5, 0.5, w - 1, total_h - 1)
+        pen = QPen(self._border, 2.0 if self.isSelected() else 1.0)
+        painter.setPen(pen)
+        painter.setBrush(self._body)
+        painter.drawRoundedRect(rect, BAR_CORNER_R, BAR_CORNER_R)
+
+        # Background for the segment area (children paint on top)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(theme.background())
+        painter.drawRect(QRectF(1, DISK_HEADER_H, w - 2, BAR_H))
+
+        # Divider between header and segment area
+        painter.setPen(QPen(self._border, 0.5))
+        painter.drawLine(QPointF(0.5, DISK_HEADER_H), QPointF(w - 0.5, DISK_HEADER_H))
+
+        # Header text: media label, device name, size, model, pttype
+        dev = self.dev
+        parts = [_MEDIA_LABEL.get(dev.media, "Disk"), dev.name]
+        if dev.size:
+            parts.append(dev.size)
+        if dev.model:
+            parts.append(dev.model)
+        if dev.pttype:
+            parts.append(dev.pttype.upper())
+        title = "  ".join(parts)
+
+        hm = QFontMetricsF(self._header_font)
+        painter.setFont(self._header_font)
+        painter.setPen(QPen(theme.text()))
+        text_y = (DISK_HEADER_H - hm.height()) / 2 + hm.ascent()
+        painter.drawText(
+            QPointF(8, text_y),
+            hm.elidedText(title, Qt.TextElideMode.ElideRight, w - 16),
+        )
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+            self.moved.emit()
+        return super().itemChange(change, value)
+
+    def mousePressEvent(self, event) -> None:
+        self._press_pos = self.pos()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if self._press_pos is not None and (self.pos() - self._press_pos).manhattanLength() > 4:
+            self.drag_finished.emit()
+        self._press_pos = None
+
+
+# ── Legacy rectangular node items (kept for cross-device edges: LVM, RAID) ───
 
 class BaseNode(QGraphicsObject):
     """A flat rectangle with a bold title and smaller detail lines."""
@@ -158,7 +397,7 @@ def _part_lines(dev: BlockDevice) -> list[str]:
 
 
 class DiskNode(BaseNode):
-    """A whole-disk (or loop) device."""
+    """A whole-disk (or loop) device (legacy rectangular node)."""
 
     def __init__(self, dev: BlockDevice):
         media = dev.media
@@ -170,7 +409,7 @@ class DiskNode(BaseNode):
 
 
 class PartNode(BaseNode):
-    """A partition, LVM volume, LUKS container, or other child device."""
+    """A partition, LVM volume, LUKS container, or other child device (legacy)."""
 
     def __init__(self, dev: BlockDevice):
         body, border = theme.part_node(dev.kind, dev.mounted, dev.fstype)
