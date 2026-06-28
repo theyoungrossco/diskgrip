@@ -18,7 +18,7 @@ def test_render_empty():
 
 
 def test_demo_main_runs_clean(capsys):
-    rc = main(["--demo"])
+    rc = main(["--cli", "--demo"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "demo host" in out

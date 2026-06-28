@@ -1,16 +1,17 @@
-"""diskgrip entry point: CLI tree viewer and PySide6 GUI.
+"""diskgrip entry point: GUI when a display is available, CLI tree otherwise.
 
-CLI (default)::
+Auto-detect::
 
-    diskgrip               # probe and print a tree of this machine's disks
-    diskgrip --demo        # canned demo host, no root, touches nothing
-    diskgrip --host HOST   # read a remote host over SSH (~/.ssh/config)
+    diskgrip               # GUI if DISPLAY/WAYLAND_DISPLAY set, else CLI tree
+    diskgrip --demo        # same auto-detect, canned demo data, nothing executed
+    diskgrip --host HOST   # same auto-detect, read remote host over SSH
 
-GUI (requires PySide6)::
+Force mode::
 
-    diskgrip --gui         # launch the canvas UI on the local machine
-    diskgrip --gui --demo  # launch the canvas with the canned demo host
-    diskgrip --gui --host HOST
+    diskgrip --gui         # always launch the canvas UI (requires PySide6)
+    diskgrip --cli         # always print the CLI tree, even with a display
+    diskgrip --gui --demo  # canvas with canned demo data
+    diskgrip --cli --host HOST  # CLI tree of a remote host
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import sys
 
 from diskgrip import __version__
 from diskgrip.core.demo import demo_devices
+from diskgrip.core.display import choose_gui, has_display
 from diskgrip.core.model import BlockDevice
 from diskgrip.core.runner import CommandError, LocalRunner, Runner, SSHRunner
 
@@ -84,19 +86,36 @@ def _build_runner(args: argparse.Namespace) -> Runner:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="diskgrip", description=__doc__)
+    parser = argparse.ArgumentParser(prog="diskgrip", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"diskgrip {__version__}")
     parser.add_argument("--demo", action="store_true",
-                        help="show the canned demo host; touches nothing")
+                        help="use canned demo data; touches nothing")
     parser.add_argument("--host", metavar="HOST",
                         help="read a remote host over SSH (ssh config name or user@host)")
-    parser.add_argument("--gui", action="store_true",
-                        help="launch the PySide6 canvas UI (requires PySide6)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--gui", action="store_true",
+                      help="force the canvas UI even when no display is detected")
+    mode.add_argument("--cli", action="store_true",
+                      help="force CLI tree output; skip the GUI even when a display is available")
     args = parser.parse_args(argv)
 
-    if args.gui:
+    if choose_gui(force_gui=args.gui, force_cli=args.cli):
         return _launch_gui(args)
 
+    # Auto-detected headless: let the user know why the GUI didn't open.
+    if not args.cli and not has_display():
+        print(
+            "diskgrip: no display detected (DISPLAY/WAYLAND_DISPLAY not set).\n"
+            "Running in CLI mode. Pass --gui to force the GUI.",
+            file=sys.stderr,
+        )
+
+    return _cli_main(args)
+
+
+def _cli_main(args: argparse.Namespace) -> int:
+    """Headless path: probe and print the block device tree."""
     if args.demo:
         print("diskgrip — demo host (read-only, nothing is executed)\n")
         print(render_tree(demo_devices()))
@@ -117,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _launch_gui(args) -> int:
+def _launch_gui(args: argparse.Namespace) -> int:
     """Launch the PySide6 GUI. Imported lazily so core stays Qt-free."""
     import signal
 
